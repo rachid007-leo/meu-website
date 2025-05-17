@@ -1,72 +1,48 @@
-const express = require('express');
-const path = require('path');
-const multer = require('multer');
-const fs = require('fs'); // Importa o módulo 'fs'
+const { pipeline } = require('node:stream/promises');
+const Busboy = require('busboy');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 
-const app = express();
-const port = 3000;
+exports.handler = async (event) => {
+  if (event.httpMethod !== 'POST') {
+    return { statusCode: 405, body: 'Method Not Allowed' };
+  }
 
-// Configuração do armazenamento para os arquivos
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, 'uploads/');
-    },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-    }
-});
+  return new Promise((resolve, reject) => {
+    const busboy = new Busboy({ headers: event.headers });
+    const tmpDir = '/tmp'; // Diretório temporário (verificar se é gravável no Netlify)
+    let uploadedFile = null;
 
-const upload = multer({ storage: storage });
-
-app.use(express.static(path.join(__dirname, '.')));
-
-// ROTA PARA RECEBER O ARQUIVO (POST)
-app.post('/upload', upload.single('arquivo'), (req, res) => {
-    if (!req.file) {
-        return res.status(400).send('Nenhum arquivo foi enviado.');
-    }
-    res.send('Arquivo enviado com sucesso!');
-});
-
-// ROTA PARA LISTAR OS ARQUIVOS (GET)
-app.get('/lista-arquivos', (req, res) => {
-    const uploadsDir = path.join(__dirname, 'uploads');
-    fs.readdir(uploadsDir, (err, files) => {
-        if (err) {
-            console.error('Erro ao ler a pasta de uploads:', err);
-            return res.status(500).send('Erro ao listar os arquivos.');
-        }
-        res.json(files); // Envia a lista de nomes de arquivos como JSON
-    });
-});
-
-// ROTA PARA SERVIR A PÁGINA INICIAL (GET)
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-app.get('/download/:filename', (req, res) => {
-    const filename = req.params.filename;
-    const filePath = path.join(__dirname, 'uploads', filename);
-
-    fs.access(filePath, fs.constants.R_OK, (err) => {
-        if (err) {
-            console.error('Arquivo não encontrado ou sem permissão para leitura:', filePath, err);
-            return res.status(404).send('Arquivo não encontrado.');
-        }
-
-        res.download(filePath, filename, (err) => {
-            if (err) {
-                console.error('Erro ao fazer o download do arquivo:', err);
-                return res.status(500).send('Erro ao fazer o download do arquivo.');
-            }
+    busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const tmpFilename = path.join(tmpDir, `${fieldname}-${uniqueSuffix}${path.extname(filename)}`);
+      uploadedFile = tmpFilename;
+      pipeline(file, fs.createWriteStream(tmpFilename))
+        .then(() => console.log(`Arquivo salvo temporariamente em: ${tmpFilename}`))
+        .catch(err => {
+          console.error('Erro ao salvar o arquivo temporariamente:', err);
+          reject({ statusCode: 500, body: 'Erro ao salvar o arquivo.' });
         });
     });
-});
 
+    busboy.on('finish', () => {
+      if (uploadedFile) {
+        resolve({
+          statusCode: 200,
+          body: 'Arquivo enviado com sucesso! (temporariamente)'
+        });
+        // Aqui você faria o upload para um serviço de armazenamento permanente
+        fs.unlink(uploadedFile).catch(err => console.error('Erro ao deletar arquivo temporário:', err));
+      } else {
+        resolve({ statusCode: 400, body: 'Nenhum arquivo foi enviado.' });
+      }
+    });
 
-// INICIA O SERVIDOR
-app.listen(port, () => {
-    console.log(`Servidor rodando em http://localhost:${port}`);
-});
+    busboy.on('error', (err) => {
+      console.error('Erro no parsing do form:', err);
+      reject({ statusCode: 500, body: 'Erro ao processar o upload.' });
+    });
+
+    busboy.write(event.body, event.isBase64Encoded ? 'base64' : 'binary');
+  });
+};
