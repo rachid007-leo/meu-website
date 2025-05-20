@@ -1,5 +1,4 @@
-const { pipeline } = require('node:stream/promises');
-const Busboy = require('busboy');
+const parser = require('aws-lambda-multipart-parser');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
@@ -8,48 +7,57 @@ exports.handler = async (event) => {
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
 
-  return new Promise((resolve, reject) => {
-    // Certifique-se de que o event.body está presente
-    if (!event.body) {
-        return resolve({ statusCode: 400, body: 'Corpo da requisição vazio.' });
+  // Verifica se o corpo da requisição está vazio
+  if (!event.body) {
+      return { statusCode: 400, body: 'Corpo da requisição vazio.' };
+  }
+
+  try {
+    // Usa o parser para analisar o corpo da requisição multipart/form-data
+    const result = parser.parse(event, true); // O 'true' indica para retornar o body como string base64
+
+    // 'result.files' conterá um array de objetos para cada arquivo enviado
+    // Se você usou name="arquivo" no seu input, o arquivo estará em result.arquivo
+    const uploadedFile = result.arquivo; // Assumindo que o name do input é "arquivo"
+
+    if (!uploadedFile) {
+      return { statusCode: 400, body: 'Nenhum arquivo foi enviado ou o campo "arquivo" não foi encontrado.' };
     }
 
-    const busboy = new Busboy({ headers: event.headers });
-    const tmpDir = '/tmp'; // Diretório temporário (verificar se é gravável no Netlify)
-    let uploadedFile = null;
+    const tmpDir = '/tmp';
+    // Certifique-se de que o diretório /tmp existe e é gravável (geralmente é em Lambdas)
+    try {
+        await fs.mkdir(tmpDir, { recursive: true });
+    } catch (dirErr) {
+        console.error('Erro ao criar diretório /tmp:', dirErr);
+        // Pode não ser necessário criar se já existir, mas é uma boa prática
+    }
 
-    busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const tmpFilename = path.join(tmpDir, `${fieldname}-${uniqueSuffix}${path.extname(filename)}`);
-      uploadedFile = tmpFilename;
-      pipeline(file, fs.createWriteStream(tmpFilename))
-        .then(() => console.log(`Arquivo salvo temporariamente em: ${tmpFilename}`))
-        .catch(err => {
-          console.error('Erro ao salvar o arquivo temporariamente:', err);
-          reject({ statusCode: 500, body: 'Erro ao salvar o arquivo.' });
-        });
-    });
+    // O conteúdo do arquivo está em uploadedFile.content (Buffer ou Base64)
+    // E o nome original do arquivo está em uploadedFile.filename
+    const fileName = uploadedFile.filename;
+    const tmpFilePath = path.join(tmpDir, fileName);
 
-    busboy.on('finish', () => {
-      if (uploadedFile) {
-        resolve({
-          statusCode: 200,
-          body: 'Arquivo enviado com sucesso! (temporariamente)'
-        });
-        // Aqui você faria o upload para um serviço de armazenamento permanente
-        // fs.unlink(uploadedFile).catch(err => console.error('Erro ao deletar arquivo temporário:', err));
-      } else {
-        resolve({ statusCode: 400, body: 'Nenhum arquivo foi enviado.' });
-      }
-    });
+    // Escreve o arquivo temporariamente.
+    // O `uploadedFile.content` já vem como Buffer ou é convertido pelo parser.
+    await fs.writeFile(tmpFilePath, uploadedFile.content);
 
-    busboy.on('error', (err) => {
-      console.error('Erro no parsing do form:', err);
-      reject({ statusCode: 500, body: 'Erro ao processar o upload.' });
-    });
+    console.log(`Arquivo salvo temporariamente em: ${tmpFilePath}`);
 
-    // É crucial que o event.body seja um Buffer para o busboy.write
-    // O Netlify geralmente envia o corpo como string base64 para POSTs com multipart/form-data
-    busboy.write(Buffer.from(event.body, event.isBase64Encoded ? 'base64' : 'binary'), event.isBase64Encoded ? 'base64' : 'binary');
-  });
+    // TODO: Aqui você faria o upload para um serviço de armazenamento permanente (AWS S3, Netlify Blobs, etc.)
+    // Lembre-se que arquivos em /tmp são temporários e serão apagados após a execução da função.
+
+    // Retorna uma resposta de sucesso
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ message: 'Arquivo enviado e salvo temporariamente com sucesso!', filename: fileName })
+    };
+
+  } catch (error) {
+    console.error('Erro no processamento do upload:', error);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ message: 'Erro ao processar o upload do arquivo.', error: error.message })
+    };
+  }
 };
