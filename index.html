@@ -5,7 +5,7 @@
 </head>
 <body>
     <h1>Envie um Arquivo</h1>
-    <form action="/api/upload" method="POST" enctype="multipart/form-data">
+    <form action="/.netlify/functions/upload" method="POST" enctype="multipart/form-data">
         <div>
             <label for="arquivo">Selecione o arquivo:</label>
             <input type="file" name="arquivo" id="arquivo" required>
