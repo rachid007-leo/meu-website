@@ -1,5 +1,5 @@
 const { pipeline } = require('node:stream/promises');
-const Busboy = require('busboy').default; // <-- MUDANÇA AQUI
+const Busboy = require('busboy');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
